@@ -20,7 +20,7 @@ spec:
         runAsUser: 1000
       containers:
         - name: demo-web
-          image: ghcr.io/javisanz23/gitops-platform/demo-web:latest
+          image: ghcr.io/javisanz23/gitops-platform/demo-web:sha-d52983a
           ports:
             - containerPort: 5000
           env:
