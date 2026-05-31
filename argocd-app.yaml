@@ -1,0 +1,20 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: demo-web
+  namespace: default
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/javisanz23/gitops-platform.git
+    targetRevision: HEAD
+    path: k8s/base
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: demo
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
