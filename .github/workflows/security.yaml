@@ -1,6 +1,7 @@
 name: Security Pipeline
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
@@ -9,7 +10,8 @@ on:
 jobs:
   trivy-scan:
     name: Trivy Security Scan
-    runs-on: ubuntu-latest
+    runs-on:
+  workflow_dispatch: ubuntu-latest
     permissions:
       contents: read
       security-events: write
@@ -45,7 +47,8 @@ jobs:
 
   conftest-scan:
     name: OPA Policy Validation
-    runs-on: ubuntu-latest
+    runs-on:
+  workflow_dispatch: ubuntu-latest
     needs: trivy-scan
 
     steps:
@@ -72,7 +75,8 @@ jobs:
 
   ai-security-agent:
     name: AI Security Agent
-    runs-on: ubuntu-latest
+    runs-on:
+  workflow_dispatch: ubuntu-latest
     needs: trivy-scan
     if: always()
     permissions:
