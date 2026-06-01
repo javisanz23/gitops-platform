@@ -1,121 +1,98 @@
 import os
 import json
+import subprocess
 import sys
 
 def analyze_cve_with_groq(cve_data: str) -> str:
-    try:
-        import urllib.request
-        
-        api_key = os.environ.get("GROQ_API_KEY", "").strip()
-        
-        if not api_key:
-            return "No se pudo obtener la API key de Groq"
-
-        prompt = f"""Eres un experto en seguridad DevOps. Analiza estos CVEs y proporciona:
-1. Resumen del riesgo
-2. Fix recomendado
-3. Urgencia (CRÍTICA/ALTA/MEDIA)
-
-CVEs:
-{cve_data[:1000]}
-
-Responde en español de forma concisa."""
-
-        payload = json.dumps({
-            "model": "llama-3.3-70b-versatile",
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 500
-        }).encode("utf-8")
-
-        req = urllib.request.Request(
-            "https://api.groq.com/openai/v1/chat/completions",
-            data=payload,
-            method="POST"
-        )
-        req.add_header("Authorization", f"Bearer {api_key}")
-        req.add_header("Content-Type", "application/json")
-
-        with urllib.request.urlopen(req, timeout=30) as response:
-            result = json.loads(response.read().decode("utf-8"))
-            return result["choices"][0]["message"]["content"]
-            
-    except Exception as e:
-        return f"Error llamando a Groq: {e}"
-
-
-def create_security_report(analysis: str, cve_summary: str) -> None:
-    token = os.environ.get("GITHUB_TOKEN", "").strip()
-    repo = os.environ.get("GITHUB_REPOSITORY", "").strip()
+    api_key = os.environ.get("GROQ_API_KEY", "").strip()
     
-    if not token or not repo:
-        print("Variables de entorno de GitHub no configuradas")
-        return
+    if not api_key:
+        return "No se pudo obtener la API key"
 
-    import urllib.request
-    import urllib.error
+    payload = json.dumps({
+        "model": "llama-3.3-70b-versatile",
+        "messages": [{
+            "role": "user",
+            "content": f"Analiza estos CVEs de seguridad y da un resumen del riesgo y fix recomendado en español:\n{cve_data[:500]}"
+        }],
+        "max_tokens": 300
+    })
+
+    # Usar curl en lugar de urllib para evitar problemas con headers
+    result = subprocess.run([
+        "curl", "-s", "-X", "POST",
+        "https://api.groq.com/openai/v1/chat/completions",
+        "-H", f"Authorization: Bearer {api_key}",
+        "-H", "Content-Type: application/json",
+        "-d", payload
+    ], capture_output=True, text=True, timeout=30)
+
+    if result.returncode != 0:
+        return f"Error en curl: {result.stderr}"
 
     try:
-        # Obtener SHA del branch main
-        req = urllib.request.Request(
-            f"https://api.github.com/repos/{repo}/git/ref/heads/main",
-            method="GET"
-        )
-        req.add_header("Authorization", f"Bearer {token}")
-        req.add_header("Accept", "application/vnd.github.v3+json")
+        data = json.loads(result.stdout)
+        if "choices" in data:
+            return data["choices"][0]["message"]["content"]
+        else:
+            return f"Respuesta inesperada: {result.stdout[:200]}"
+    except json.JSONDecodeError:
+        return f"Error parseando respuesta: {result.stdout[:200]}"
 
-        with urllib.request.urlopen(req) as r:
-            sha = json.loads(r.read())["object"]["sha"]
 
-        branch_name = f"security/ai-fix-{os.environ.get('GITHUB_RUN_ID', 'manual')}"
+def create_pr(analysis: str, token: str, repo: str, run_id: str) -> None:
+    # Obtener SHA
+    result = subprocess.run([
+        "curl", "-s",
+        f"https://api.github.com/repos/{repo}/git/ref/heads/main",
+        "-H", f"Authorization: Bearer {token}",
+        "-H", "Accept: application/vnd.github.v3+json"
+    ], capture_output=True, text=True)
 
-        # Crear branch
-        payload = json.dumps({"ref": f"refs/heads/{branch_name}", "sha": sha}).encode()
-        req = urllib.request.Request(
-            f"https://api.github.com/repos/{repo}/git/refs",
-            data=payload,
-            method="POST"
-        )
-        req.add_header("Authorization", f"Bearer {token}")
-        req.add_header("Accept", "application/vnd.github.v3+json")
-        req.add_header("Content-Type", "application/json")
+    sha = json.loads(result.stdout)["object"]["sha"]
+    branch = f"security/ai-fix-{run_id}"
 
-        try:
-            urllib.request.urlopen(req)
-        except urllib.error.HTTPError:
-            pass
+    # Crear branch
+    subprocess.run([
+        "curl", "-s", "-X", "POST",
+        f"https://api.github.com/repos/{repo}/git/refs",
+        "-H", f"Authorization: Bearer {token}",
+        "-H", "Accept: application/vnd.github.v3+json",
+        "-H", "Content-Type: application/json",
+        "-d", json.dumps({"ref": f"refs/heads/{branch}", "sha": sha})
+    ], capture_output=True)
 
-        # Crear PR
-        pr_body = f"""## 🤖 Security Report — AI Agent
+    # Crear PR
+    pr_body = f"""## 🤖 AI Security Report
 
-### Análisis de Seguridad (Groq Llama 3.3 70B)
+### Análisis (Groq Llama 3.3 70B)
 {analysis}
 
-### CVEs Detectados
 ---
 *Generado automáticamente por el AI Security Agent*
 """
-        payload = json.dumps({
+    result = subprocess.run([
+        "curl", "-s", "-X", "POST",
+        f"https://api.github.com/repos/{repo}/pulls",
+        "-H", f"Authorization: Bearer {token}",
+        "-H", "Accept: application/vnd.github.v3+json",
+        "-H", "Content-Type: application/json",
+        "-d", json.dumps({
             "title": "🔒 [AI Security] Reporte de vulnerabilidades",
             "body": pr_body,
-            "head": branch_name,
+            "head": branch,
             "base": "main"
-        }).encode()
+        })
+    ], capture_output=True, text=True)
 
-        req = urllib.request.Request(
-            f"https://api.github.com/repos/{repo}/pulls",
-            data=payload,
-            method="POST"
-        )
-        req.add_header("Authorization", f"Bearer {token}")
-        req.add_header("Accept", "application/vnd.github.v3+json")
-        req.add_header("Content-Type", "application/json")
-
-        with urllib.request.urlopen(req) as r:
-            pr = json.loads(r.read())
+    try:
+        pr = json.loads(result.stdout)
+        if "html_url" in pr:
             print(f"✅ PR creado: {pr['html_url']}")
-
+        else:
+            print(f"Respuesta: {result.stdout[:300]}")
     except Exception as e:
-        print(f"Error creando PR: {e}")
+        print(f"Error: {e}")
 
 
 def main():
@@ -124,14 +101,19 @@ def main():
         with open("trivy-report.txt", "r") as f:
             trivy_report = f.read()
     except FileNotFoundError:
-        trivy_report = "No se encontró reporte de Trivy - análisis general de seguridad"
+        trivy_report = "Análisis general de seguridad del repositorio"
 
     print("🔍 Analizando con Groq AI...")
     analysis = analyze_cve_with_groq(trivy_report)
     print(f"📋 Análisis:\n{analysis}")
 
-    print("\n🔀 Creando reporte en GitHub...")
-    create_security_report(analysis, trivy_report)
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    repo = os.environ.get("GITHUB_REPOSITORY", "").strip()
+    run_id = os.environ.get("GITHUB_RUN_ID", "manual")
+
+    if token and repo:
+        print("\n🔀 Creando PR...")
+        create_pr(analysis, token, repo, run_id)
 
 
 if __name__ == "__main__":
