@@ -1,24 +1,19 @@
 import os
 import json
 import subprocess
-import sys
+from datetime import datetime
 
 def analyze_cve_with_groq(cve_data: str) -> str:
     api_key = os.environ.get("GROQ_API_KEY", "").strip()
-    
     if not api_key:
         return "No se pudo obtener la API key"
 
     payload = json.dumps({
         "model": "llama-3.3-70b-versatile",
-        "messages": [{
-            "role": "user",
-            "content": f"Analiza estos CVEs de seguridad y da un resumen del riesgo y fix recomendado en español:\n{cve_data[:500]}"
-        }],
+        "messages": [{"role": "user", "content": f"Analiza estos CVEs de seguridad y da un resumen del riesgo y fix recomendado en español:\n{cve_data[:500]}"}],
         "max_tokens": 300
     })
 
-    # Usar curl en lugar de urllib para evitar problemas con headers
     result = subprocess.run([
         "curl", "-s", "-X", "POST",
         "https://api.groq.com/openai/v1/chat/completions",
@@ -27,21 +22,17 @@ def analyze_cve_with_groq(cve_data: str) -> str:
         "-d", payload
     ], capture_output=True, text=True, timeout=30)
 
-    if result.returncode != 0:
-        return f"Error en curl: {result.stderr}"
-
     try:
         data = json.loads(result.stdout)
         if "choices" in data:
             return data["choices"][0]["message"]["content"]
-        else:
-            return f"Respuesta inesperada: {result.stdout[:200]}"
+        return f"Respuesta inesperada: {result.stdout[:200]}"
     except json.JSONDecodeError:
         return f"Error parseando respuesta: {result.stdout[:200]}"
 
 
-def create_pr(analysis: str, token: str, repo: str, run_id: str) -> None:
-    # Obtener SHA
+def create_pr_with_report(analysis: str, cve_data: str, token: str, repo: str, run_id: str) -> None:
+    # Obtener SHA de main
     result = subprocess.run([
         "curl", "-s",
         f"https://api.github.com/repos/{repo}/git/ref/heads/main",
@@ -50,7 +41,8 @@ def create_pr(analysis: str, token: str, repo: str, run_id: str) -> None:
     ], capture_output=True, text=True)
 
     sha = json.loads(result.stdout)["object"]["sha"]
-    branch = f"security/ai-fix-{run_id}"
+    branch = f"security/ai-report-{run_id}"
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     # Crear branch
     subprocess.run([
@@ -62,8 +54,36 @@ def create_pr(analysis: str, token: str, repo: str, run_id: str) -> None:
         "-d", json.dumps({"ref": f"refs/heads/{branch}", "sha": sha})
     ], capture_output=True)
 
+    # Crear archivo de reporte en el branch
+    report_content = f"""# Security Report — {timestamp}
+
+## Análisis de IA (Groq Llama 3.3 70B)
+
+{analysis}
+
+## Datos del escaneo Trivy
+---
+*Generado automáticamente por el AI Security Agent*
+*Run ID: {run_id}*
+"""
+    import base64
+    content_b64 = base64.b64encode(report_content.encode()).decode()
+
+    result = subprocess.run([
+        "curl", "-s", "-X", "PUT",
+        f"https://api.github.com/repos/{repo}/contents/security-reports/report-{run_id}.md",
+        "-H", f"Authorization: Bearer {token}",
+        "-H", "Accept: application/vnd.github.v3+json",
+        "-H", "Content-Type: application/json",
+        "-d", json.dumps({
+            "message": f"security: añadir reporte AI [{run_id}]",
+            "content": content_b64,
+            "branch": branch
+        })
+    ], capture_output=True, text=True)
+
     # Crear PR
-    pr_body = f"""## 🤖 AI Security Report
+    pr_body = f"""## 🤖 AI Security Report — {timestamp}
 
 ### Análisis (Groq Llama 3.3 70B)
 {analysis}
@@ -78,7 +98,7 @@ def create_pr(analysis: str, token: str, repo: str, run_id: str) -> None:
         "-H", "Accept: application/vnd.github.v3+json",
         "-H", "Content-Type: application/json",
         "-d", json.dumps({
-            "title": "🔒 [AI Security] Reporte de vulnerabilidades",
+            "title": f"🔒 [AI Security] Reporte {timestamp}",
             "body": pr_body,
             "head": branch,
             "base": "main"
@@ -101,7 +121,7 @@ def main():
         with open("trivy-report.txt", "r") as f:
             trivy_report = f.read()
     except FileNotFoundError:
-        trivy_report = "Análisis general de seguridad del repositorio"
+        trivy_report = "Análisis general de seguridad"
 
     print("🔍 Analizando con Groq AI...")
     analysis = analyze_cve_with_groq(trivy_report)
@@ -112,8 +132,8 @@ def main():
     run_id = os.environ.get("GITHUB_RUN_ID", "manual")
 
     if token and repo:
-        print("\n🔀 Creando PR...")
-        create_pr(analysis, token, repo, run_id)
+        print("\n🔀 Creando PR con reporte...")
+        create_pr_with_report(analysis, trivy_report, token, repo, run_id)
 
 
 if __name__ == "__main__":
